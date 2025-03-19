@@ -40,7 +40,7 @@ def get_ct_dict(predict_matrix, batch_num, ct_dict):
     return ct_dict
 
 
-def get_ct_dict_fast_one(predict_matrix, seq_embedding, seq_name_save, ct_file_name):
+def gen_result(predict_matrix, seq_embedding):
     seq_tmp = (
         torch.mul(
             predict_matrix.cpu().argmax(axis=1),
@@ -60,7 +60,7 @@ def get_ct_dict_fast_one(predict_matrix, seq_embedding, seq_name_save, ct_file_n
     ct_dict = [(seq[0][i], seq[1][i]) for i in np.arange(len(seq[0])) if seq[0][i] != 0]
     dot_dict = [seq_letter, dot_list[: len(seq_letter)]]
 
-    ct_file_output(ct_dict, seq_letter, seq_name_save, ct_file_name)
+    # ct_file_output(ct_dict, seq_letter, seq_name_save, ct_file_name)
 
     _, _, noncanonical_pairs = type_pairs(ct_dict, seq_letter)
     tertiary_bp = [list(x) for x in set(tuple(x) for x in noncanonical_pairs)]
@@ -72,41 +72,8 @@ def get_ct_dict_fast_one(predict_matrix, seq_embedding, seq_name_save, ct_file_n
             str_tertiary += ";(" + str(I[0]) + "," + str(I[1]) + '):color=""#FFFF00""'
 
     tertiary_bp = "".join(str_tertiary)
-    return dot_dict, tertiary_bp
 
-
-def ct_file_output(pairs, seq, seq_name_save, ct_file_name):
-    col1 = np.arange(1, len(seq) + 1, 1)
-    col2 = np.array([i for i in seq])
-    col3 = np.arange(0, len(seq), 1)
-    col4 = np.append(np.delete(col1, 0), [0])
-    col5 = np.zeros(len(seq), dtype=int)
-
-    for i, I in enumerate(pairs):
-        col5[I[0] - 1] = int(I[1])
-
-    col6 = np.arange(1, len(seq) + 1, 1)
-    temp = np.vstack(
-        (
-            np.char.mod("%d", col1),
-            col2,
-            np.char.mod("%d", col3),
-            np.char.mod("%d", col4),
-            np.char.mod("%d", col5),
-            np.char.mod("%d", col6),
-        )
-    ).T
-
-    np.savetxt(
-        ct_file_name,
-        (temp),
-        delimiter="\t",
-        fmt="%s",
-        header=">seq length: " + str(len(seq)) + "\t seq name: " + seq_name_save,
-        comments="",
-    )
-
-    return
+    return seq_letter, ct_dict, dot_dict, tertiary_bp
 
 
 def type_pairs(pairs, sequence):
@@ -267,26 +234,17 @@ def test_one(contact_net, file_name, save_dir, seq_name_save=None, nc=False):
     else:
         postprocess = postprocess_new
 
-    input_data = open(file_name, "r").readlines()
-    assert len(input_data) == 2
-    assert input_data[0].startswith(">")
-    seq_name = input_data[0][1:].strip()
-    seq_data = input_data[1].strip().upper().replace("T", "U")
-    assert seq_data.startswith(("A", "U", "C", "G"))
+    seq_name, seq_data = get_seq_data_from_file(file_name)
 
     if seq_name_save is None:
         seq_name_save = seq_name.replace("/", "_")
 
     seq_length = len(seq_data)
     data_one_hot = torch.Tensor(one_hot_600(seq_data)).int()
-
     seq_embeddings, seq_ori = preprocess_one(data_one_hot, seq_length)
 
-    seq_embeddings = torch.Tensor(seq_embeddings).unsqueeze(0)
-    seq_ori = torch.Tensor(seq_ori).unsqueeze(0)
-
-    seq_embedding_input = torch.Tensor(seq_embeddings.float()).to(device)
-    seq_ori = torch.Tensor(seq_ori.float()).to(device)
+    seq_embedding_input = torch.Tensor(seq_embeddings).unsqueeze(0).float().to(device)
+    seq_ori = torch.Tensor(seq_ori).unsqueeze(0).float().to(device)
 
     with torch.no_grad():
         pred_contacts = contact_net(seq_embedding_input)
@@ -295,11 +253,26 @@ def test_one(contact_net, file_name, save_dir, seq_name_save=None, nc=False):
     u_no_train = postprocess(pred_contacts, seq_ori, 0.01, 0.1, 100, 1.6, True, 1.5)
     map_no_train = (u_no_train > 0.5).float()
 
-    ct_file_name = os.path.join(save_dir, "{}.ct".format(seq_name_save))
-    dot_dict, tertiary_bp = get_ct_dict_fast_one(
-        map_no_train, seq_ori.squeeze(0), seq_name_save, ct_file_name
+    seq_letter, ct_dict, dot_dict, tertiary_bp = gen_result(
+        map_no_train, seq_ori.squeeze(0)
     )
 
+    ct_file_name = os.path.join(save_dir, "{}.ct".format(seq_name_save))
+    ct_output(ct_dict, seq_letter, seq_name_save, ct_file_name)
+    dot_output(dot_dict, seq_name_save, save_dir)
+    png_output(nc, tertiary_bp, ct_file_name, seq_name_save, save_dir)
+
+def get_seq_data_from_file(file_name):
+    input_data = open(file_name, "r").readlines()
+    assert len(input_data) == 2
+    assert input_data[0].startswith(">")
+    seq_name = input_data[0][1:].strip()
+    seq_data = input_data[1].strip().upper().replace("T", "U")
+    assert seq_data.startswith(("A", "U", "C", "G"))
+    return seq_name,seq_data
+
+
+def png_output(nc, tertiary_bp, ct_file_name, seq_name_save, save_dir):
     if not nc:
         png_file_name = os.path.join(save_dir, "{}_radiate.png".format(seq_name_save))
         subprocess.Popen(
@@ -349,12 +322,48 @@ def test_one(contact_net, file_name, save_dir, seq_name_save=None, nc=False):
             stdout=subprocess.PIPE,
         ).communicate()[0]
 
+
+def dot_output(dot_dict, seq_name_save, save_dir):
     dot_file_name = os.path.join(save_dir, "{}_dot.txt".format(seq_name_save))
     with open(dot_file_name, "w") as f:
         f.write(">{}\n".format(seq_name_save))
         f.write("{}\n".format(dot_dict[0]))
         f.write("{}\n".format(dot_dict[1]))
         f.write("\n")
+
+
+def ct_output(pairs, seq, seq_name_save, ct_file_name):
+    col1 = np.arange(1, len(seq) + 1, 1)
+    col2 = np.array([i for i in seq])
+    col3 = np.arange(0, len(seq), 1)
+    col4 = np.append(np.delete(col1, 0), [0])
+    col5 = np.zeros(len(seq), dtype=int)
+
+    for i, I in enumerate(pairs):
+        col5[I[0] - 1] = int(I[1])
+
+    col6 = np.arange(1, len(seq) + 1, 1)
+    temp = np.vstack(
+        (
+            np.char.mod("%d", col1),
+            col2,
+            np.char.mod("%d", col3),
+            np.char.mod("%d", col4),
+            np.char.mod("%d", col5),
+            np.char.mod("%d", col6),
+        )
+    ).T
+
+    np.savetxt(
+        ct_file_name,
+        (temp),
+        delimiter="\t",
+        fmt="%s",
+        header=">seq length: " + str(len(seq)) + "\t seq name: " + seq_name_save,
+        comments="",
+    )
+
+    return
 
 
 if __name__ == "__main__":
